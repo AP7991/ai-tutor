@@ -1,0 +1,77 @@
+.app {
+  font-family: sans-serif;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 20px;
+  height: 100vh;  /* full viewport height */
+  box-sizing: border-box;
+}
+
+.content-container {
+  width: 90%;
+  max-width: 700px;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid #ccc;
+  background-color: #fdfdfd;
+  border-radius: 8px;
+  overflow: hidden;
+  margin-bottom: 15px;
+  height: 70vh; /* take most of vertical space */
+}
+
+.whiteboard {
+  flex: 1;
+  overflow-y: auto;
+  padding: 15px;
+  background-color: #f9f9f9;
+  border-bottom: 1px solid #ccc;
+}
+
+.explanation {
+  flex: 1;
+  overflow-y: auto;
+  padding: 15px;
+  font-size: 1rem;
+  background-color: #fff;
+}
+
+.input-container {
+  display: flex;
+  width: 90%;
+  max-width: 700px;
+}
+
+input {
+  flex: 1;
+  padding: 10px;
+  font-size: 16px;
+  border: 1px solid #ccc;
+  border-radius: 6px 0 0 6px;
+  outline: none;
+}
+
+button {
+  padding: 10px 20px;
+  font-size: 16px;
+  border: 1px solid #ccc;
+  border-left: none;
+  border-radius: 0 6px 6px 0;
+  background-color: #4caf50;
+  color: white;
+  cursor: pointer;
+}
+
+button:disabled {
+  background-color: #999;
+  cursor: not-allowed;
+}
+
+.loading-indicator {
+  margin-top: 10px;
+  font-style: italic;
+  color: #555;
+}
+
