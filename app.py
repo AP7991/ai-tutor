@@ -7,7 +7,6 @@ import json
 import re
 from datetime import datetime
 
-
 app = Flask(__name__)
 CORS(app)
 
@@ -20,7 +19,6 @@ DB_PATH = "chat_history.db"
 # --- Database setup -------------------------------------------------------
 
 def init_db():
-    """Create the messages and proficiency tables if they don't exist."""
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS messages (
@@ -41,9 +39,7 @@ def init_db():
         """)
         conn.commit()
 
-
 def save_message(role, content):
-    """Insert a new message into the DB."""
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute(
             "INSERT INTO messages (role, content) VALUES (?, ?)",
@@ -51,9 +47,7 @@ def save_message(role, content):
         )
         conn.commit()
 
-
 def load_history(limit=20):
-    """Load the last `limit` messages from the DB, oldest first."""
     with sqlite3.connect(DB_PATH) as conn:
         cur = conn.execute(
             "SELECT role, content FROM messages ORDER BY id DESC LIMIT ?",
@@ -62,16 +56,12 @@ def load_history(limit=20):
         rows = cur.fetchall()
     return list(reversed(rows))
 
-
 def get_proficiency():
-    """Fetch all stored proficiency scores."""
     with sqlite3.connect(DB_PATH) as conn:
         cur = conn.execute("SELECT topic, sub_topic, score FROM proficiency")
         return {(r[0], r[1]): r[2] for r in cur.fetchall()}
 
-
 def upsert_proficiency(topic, sub_topic, score):
-    """Insert or update a proficiency score for a topic/sub-topic."""
     now = datetime.utcnow().isoformat()
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute("""
@@ -83,17 +73,55 @@ def upsert_proficiency(topic, sub_topic, score):
         """, (topic, sub_topic, score, now))
         conn.commit()
 
-# Ensure DB and tables exist on startup
 init_db()
 
-# --- Clarification detection ---------------------------------------------
-
 def is_clarification(msg):
-    """Return True if the user is asking to clarify a previous step."""
     msg_lower = msg.lower()
     return bool(re.search(r"explain step \d+", msg_lower) or msg_lower.startswith("why") or "clarify step" in msg_lower)
 
-# --- Chat endpoint --------------------------------------------------------
+def build_prompt(user_message, history=None):
+    if history:
+        convo_prompt = "".join(f"{role.upper()}: {text.strip()}\n" for role, text in history)
+    else:
+        convo_prompt = ""
+
+    if is_clarification(user_message):
+        prompt = (
+            "You are an AI math tutor. The user is asking for clarification on one of your previous math steps. "
+            "Find the referenced step from the conversation above and explain it in clear, student-friendly language. "
+            "Do NOT emit any PROFICIENCY_ASSESSMENT JSON.\n\n"
+            f"{convo_prompt}"
+            f"USER: {user_message}\n"
+        )
+    else:
+        prompt = (
+            "You are an AI math tutor.\n"
+            "Return a response strictly formatted as follows:\n\n"
+            "MATH:\n"
+            "1. First math step\n"
+            "2. Second math step\n"
+            "...\n\n"
+            "---\n\n"
+            "EXPLANATION:\n"
+            "1. Explanation of First step\n"
+            "2. Explanation of Second step\n"
+            "...\n\n"
+            "Always end with a short question to check understanding. "
+            "Always respond even if the student repeats themselves.\n\n"
+            f"{convo_prompt}"
+            f"USER: {user_message}\n"
+        )
+    return prompt
+
+def call_gemini(prompt):
+    body = {
+        "contents": [
+            {"role": "user", "parts": [{"text": prompt}]}
+        ]
+    }
+    r = requests.post(URL, headers=HEADERS, json=body)
+    r.raise_for_status()
+    return r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
 
 @app.route('/api/chat', methods=['POST'])
 def chat():
@@ -101,68 +129,26 @@ def chat():
     if not user_message:
         return "Error: message is required", 400
 
-    # 1) save the user's message
     save_message("user", user_message)
-
-    # 2) load recent history
     history = load_history(limit=20)
-    convo_prompt = "".join(f"{role.upper()}: {text}\n" for role, text in history)
 
-    # 3) optionally fetch current proficiency for use in prompts
-    prof = get_proficiency()
-
-    # 4) build the prompt based on whether it's a clarification
-    if is_clarification(user_message):
-        # Clarification prompt: explain a previous step
-        full_prompt = (
-            "You are an AI math tutor. The user is asking for clarification on one of your previous math steps. "
-            "Find the referenced step from the conversation above and explain it in clear, student-friendly language. "
-            "Do NOT emit any PROFICIENCY_ASSESSMENT JSON or repeat the MATH/EXPLANATION template.\n\n"
-            f"{convo_prompt}"
-            f"USER: {user_message}\n"
-        )
-    else:
-        # Standard problem-solving prompt with proficiency assessment
-        full_prompt = (
-            "You are an AI math tutor. "
-            "First, analyze the user's past messages to infer their competence (1–10) in each topic and sub-topic mentioned. "
-            "Return a JSON object labelled \"PROFICIENCY_ASSESSMENT\" mapping topics to sub-topics with scores.\n\n"
-            "Then, answer the user's question, tailoring the difficulty exactly to their level.\n\n"
-            "Return a response strictly formatted as follows:\n\n"
-            "MATH:\n"
-            "1. First math step (maths only - in text)\n"
-            "2. Second math step (maths only - in text)\n"
-            "3. Third math step (maths only - in text) etc.\n\n"
-            "---\n\n"
-            "EXPLANATION:\n"
-            "1. Explanation of First math step (in text)\n"
-            "2. Explanation of second math step (in text)\n"
-            "etc.\n\n"
-            "Always wrap any {text:} items in braces if they appear in MATH. "
-            "Always end with a question to check understanding. Make sure your response is short enough and understandable for a year 10 maths student. "
-            "Always give an explanation even if the student is repeating themselves. \n\n"
-            f"{convo_prompt}"
-            f"USER: {user_message}\n\n"
-        )
-
-    body = {
-        "contents": [
-            {"role": "user", "parts": [{"text": full_prompt}]}  
-        ]
-    }
-
-    # 5) call Gemini
     try:
-        r = requests.post(URL, headers=HEADERS, json=body)
-        r.raise_for_status()
-        ai_text = r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
-    except Exception as e:
-        return f"Error: {str(e)}", 500
+        prompt = build_prompt(user_message, history)
+        ai_text = call_gemini(prompt)
 
-    # 6) save AI reply
+        if "I am unable to answer" in ai_text or "Let us return to the original question" in ai_text:
+            raise ValueError("Unsatisfactory Gemini response")
+
+    except Exception:
+        # Retry without history if the first attempt failed
+        try:
+            prompt = build_prompt(user_message, history=None)
+            ai_text = call_gemini(prompt)
+        except Exception as e2:
+            return f"Error: {str(e2)}", 500
+
     save_message("ai", ai_text)
 
-    # 7) if not clarification, extract & persist proficiency JSON
     if not is_clarification(user_message):
         match = re.search(r'PROFICIENCY_ASSESSMENT\s*:\s*(\{.*?\})', ai_text, re.DOTALL)
         if match:
@@ -175,7 +161,6 @@ def chat():
             except json.JSONDecodeError:
                 pass
 
-    # 8) return raw for front-end parsing
     return ai_text
 
 if __name__ == '__main__':
